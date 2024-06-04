@@ -1,20 +1,31 @@
-# Created by Anthony Brinkhuis
 import struct
 import lxml.etree as et
 import pandas as pd
+import ctypes
 
 
 class SysmacData:
     def __init__(self, file_name):
         self.file_name = file_name
-
     @staticmethod
-    def hex_to_real(hex_val):
-        binary_data = bytes.fromhex(hex_val)
-        FLOAT = 'f'
-        fmt = '<' + FLOAT * (len(binary_data) // struct.calcsize(FLOAT))
-        numbers = struct.unpack(fmt, binary_data)
-        return numbers[0]
+    def float_to_hex(float_value):
+    # Determine precision (32-bit or 64-bit) based on the size of the float
+        is_double_precision = (struct.calcsize("P") == 8)
+    
+    # Select format string based on precision
+        if is_double_precision:
+            fmt = '<d'  # '>d' for double precision (64-bit)
+        else:
+            fmt = '<f'  # '>f' for single precision (32-bit)
+    
+    # Pack float value into bytes in big endian format
+        binary_data = struct.pack(fmt, float_value)
+    
+    # Convert binary data to hexadecimal string
+        hex_data = binary_data.hex().upper()  # Convert to uppercase for consistency
+    
+        return hex_data
+
     
     @staticmethod
     def real_to_hex(real_number):
@@ -22,6 +33,21 @@ class SysmacData:
         hex_data = binary_data.hex()
         return hex_data
 
+    @staticmethod
+    def hex_string_to_hex_number(hex_string):
+        hex_number = int(hex_string, 16)
+        return hex_number
+    
+    
+    @staticmethod
+    def int_to_bytes(integer_value, byte_order='big', signed=False):
+        # Determine the number of bytes required to represent the integer
+        num_bytes = (integer_value.bit_length() + 7) // 8
+    
+        # Convert the integer to bytes
+        byte_data = integer_value.to_bytes(num_bytes, byte_order, signed=signed)
+    
+        return byte_data
     def parse_xml(self):
         xml_data = et.parse(f'{self.file_name}.xml')
         data_root = xml_data.find('Body')
@@ -39,7 +65,19 @@ class SysmacData:
 
             if ('REAL' in data_type) or ('real' in data_type):
                 lst_tag.append(tag)
-                lst_data.append(self.hex_to_real(data_text))
+                
+                hex_numb=self.hex_string_to_hex_number(data_text)
+                
+                if 'LR' in data_type or 'lr' in data_type:
+                    byte_data = self.int_to_bytes(hex_numb, byte_order='big', signed=False)
+                    byte_data = byte_data.rjust(8, b'\x00')  # Pad with zeros to ensure 8 bytes
+                    float_numb = struct.unpack('d', byte_data)[0]
+                else:  # Single precision    
+                    byte_data = self.int_to_bytes(hex_numb, byte_order='big', signed=False)[:4]
+                    byte_data = byte_data.ljust(4, b'\x00')  # Pad with zeros to ensure 4 bytes
+                    float_numb = struct.unpack('f', byte_data)[0]
+
+                lst_data.append(float_numb)
                 lst_type.append(data_type)
             elif ('STRING' in data_type) or ('string' in data_type):
                 lst_tag.append(tag)
@@ -75,11 +113,16 @@ class SysmacData:
 
         # Iterate through the dataframe rows and build XML elements
         for index, row in df.iterrows():
-            item = et.SubElement(retain_vars, "Item", Name=f"AT%s" % row["Tag"], Type=row["Type"])
+            item = et.SubElement(retain_vars, "Item", Name=f"%s" % row["Tag"], Type=row["Type"])
             data = et.SubElement(item, "Data")
 
             if "REAL" in row["Type"] or "real" in row["Type"]:
-                data.text = self.real_to_hex(float(row["Data"]))
+                
+                
+                aas=float(row["Data"])
+                saa=self.float_to_hex(aas)
+                data.text = saa
+                
             elif "STRING" in row["Type"] or "string" in row["Type"]:
                 data_value = row["Data"]
                 if isinstance(data_value, str):
@@ -88,7 +131,6 @@ class SysmacData:
                     data.text = ''
             else:
                 data.text = str(row["Data"])
-            print(index)
 
         # Generate the XML string with lxml.etree.tostring and include the XML declaration
         xml_string = et.tostring(root, encoding='utf-8', pretty_print=True, xml_declaration=True).decode('utf-8')
